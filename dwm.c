@@ -2144,6 +2144,7 @@ void
 unmanage(Client *c, int destroyed)
 {
 	Monitor *m = c->mon;
+	Client *top = NULL;
 	XWindowChanges wc;
 
 	detach(c);
@@ -2161,10 +2162,29 @@ unmanage(Client *c, int destroyed)
 		XUngrabServer(dpy);
 	}
 	free(c);
-	focus(NULL);
-	updateclientlist();
-	arrange(m);
-	if (m == selmon && m->sel) 
+
+	if (!s) {
+		/* Find the topmost visible window */
+		for (top = m->clients; top && (!ISVISIBLE(top) || top->isfloating); top = top->next);
+
+		if (top) {
+			/* Focus the top window and set it as the current focus */
+			focus(top);
+			restack(m);
+			/* Warp the cursor to the center of the top window */
+			XWarpPointer(dpy, None, top->win, 0, 0, 0, 0, top->w / 2, top->h / 2);
+			/* Set the input focus to the top window */
+			XSetInputFocus(dpy, top->win, RevertToPointerRoot, CurrentTime);
+		} else {
+			/* If no top window is found, revert focus to the root window */
+			XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
+		}
+
+		updateclientlist();
+		arrange(m);
+	}
+
+	if (m == selmon && m->sel)
 		XWarpPointer(dpy, None, m->sel->win, 0, 0, 0, 0, m->sel->w/2, m->sel->h/2);
 }
 
