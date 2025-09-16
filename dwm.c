@@ -281,6 +281,7 @@ static void updatetitle(Client *c);
 static void updatewindowtype(Client *c);
 static void updatewmhints(Client *c);
 static void view(const Arg *arg);
+static void warp(Client *c);
 static Client *wintoclient(Window w);
 static Monitor *wintomon(Window w);
 static Client *wintosystrayicon(Window w);
@@ -1143,8 +1144,7 @@ focusmon(const Arg *arg)
 	unfocus(selmon->sel, 0);
 	selmon = m;
 	focus(NULL);
-	if (selmon->sel)
-		XWarpPointer(dpy, None, selmon->sel->win, 0, 0, 0, 0, selmon->sel->w/2, selmon->sel->h/2);
+	warp(selmon->sel);
 }
 
 void
@@ -1170,7 +1170,7 @@ focusstack(const Arg *arg)
 	if (c) {
 		focus(c);
 		restack(selmon);
-		XWarpPointer(dpy, None, c->win, 0, 0, 0, 0, c->w/2, c->h/2);
+		warp(c);
 	}
 }
 
@@ -1440,11 +1440,11 @@ manage(Window w, XWindowAttributes *wa)
 	c->mon->sel = c;
 	arrange(c->mon);
 	XMapWindow(dpy, c->win);
-	if (c && c->mon == selmon)
-		XWarpPointer(dpy, None, c->win, 0, 0, 0, 0, c->w/2, c->h/2);
 	if (term)
 		swallow(term, c);
 	focus(NULL);
+	if (ISVISIBLE(c))
+		warp(c);
 }
 
 void
@@ -1479,16 +1479,17 @@ maprequest(XEvent *e)
 void
 monocle(Monitor *m)
 {
-	unsigned int n = 0;
+	int w, h, x, y;
 	Client *c;
-
-	for (c = m->clients; c; c = c->next)
-		if (ISVISIBLE(c))
-			n++;
-	if (n > 0) /* override layout symbol */
-		snprintf(m->ltsymbol, sizeof m->ltsymbol, "[%d]", n);
-	for (c = nexttiled(m->clients); c; c = nexttiled(c->next))
-		resize(c, m->wx, m->wy, m->ww - 2 * c->bw, m->wh - 2 * c->bw, 0);
+	
+	for (c = nexttiled(m->clients); c; c = nexttiled(c->next)) {
+		x = m->wx;
+		y = m->wy;
+		w = m->ww - 2 * c->bw;
+		h = m->wh - 2 * c->bw;
+		applysizehints(c, &x, &y, &w, &h, 0);
+		resizeclient(c, x, y, w, h);
+	}
 }
 
 void
@@ -2103,6 +2104,11 @@ scan(void)
 		}
 		XFree(wins);
 	}
+
+	/* We may have last run manage() on a window that isn't visible. To be
+	 * deterministic on startup, place focus/warp on current master if any
+	 * client exists. */
+	warp(nexttiled(selmon->clients));
 }
 
 void
@@ -2252,9 +2258,11 @@ Layout *last_layout;
 void
 fullscreen(const Arg *arg)
 {
-	if (selmon->showbar) {
-		for(last_layout = (Layout *)layouts; last_layout != selmon->lt[selmon->sellt]; last_layout++);
-		setlayout(&((Arg) { .v = &layouts[2] }));
+	int monocle_pos = 0;
+	if (selmon->showbar || last_layout == NULL) {
+		for (monocle_pos = 0, last_layout = (Layout *)layouts; !last_layout->arrange || last_layout->arrange != &monocle; monocle_pos++, last_layout++ );
+		for (last_layout = (Layout *)layouts; last_layout != selmon->lt[selmon->sellt]; last_layout++);
+		setlayout(&((Arg) { .v = &layouts[monocle_pos] }));
 	} else {
 		setlayout(&((Arg) { .v = last_layout }));
 	}
@@ -2469,10 +2477,19 @@ tag(const Arg *arg)
 void
 tagmon(const Arg *arg)
 {
-	if (!selmon->sel || !mons->next)
+	Client *c = selmon->sel;
+	if (!c || !mons->next)
 		return;
-	sendmon(selmon->sel, dirtomon(arg->i));
-	focusmon(arg);
+	if (c->isfullscreen) {
+		c->isfullscreen = 0;
+		sendmon(c, dirtomon(arg->i));
+		c->isfullscreen = 1;
+		if (c->fakefullscreen != 1) {
+			resizeclient(c, c->mon->mx, c->mon->my, c->mon->mw, c->mon->mh);
+			XRaiseWindow(dpy, c->win);
+		}
+	} else
+		sendmon(c, dirtomon(arg->i));
 }
 
 void
@@ -2555,13 +2572,14 @@ togglefloating(const Arg *arg)
 {
 	if (!selmon->sel)
 		return;
-	if (selmon->sel->isfullscreen) /* no support for fullscreen windows */
+	if (selmon->sel->isfullscreen && selmon->sel->fakefullscreen != 1) /* no support for fullscreen windows */
 		return;
 	selmon->sel->isfloating = !selmon->sel->isfloating || selmon->sel->isfixed;
 	if (selmon->sel->isfloating)
 		resize(selmon->sel, selmon->sel->x, selmon->sel->y,
 			selmon->sel->w, selmon->sel->h, 0);
 	arrange(selmon);
+	warp(NULL);
 }
 
 void
@@ -2576,6 +2594,7 @@ toggletag(const Arg *arg)
 		selmon->sel->tags = newtags;
 		arrange(selmon);
 		focus(NULL);
+		warp(NULL);
 	}
 }
 
@@ -2679,9 +2698,6 @@ unmanage(Client *c, int destroyed)
 		updateclientlist();
 		arrange(m);
 	}
-
-	if (m == selmon && m->sel)
-		XWarpPointer(dpy, None, m->sel->win, 0, 0, 0, 0, m->sel->w/2, m->sel->h/2);
 }
 
 void
@@ -3105,8 +3121,9 @@ view(const Arg *arg)
 	if (selmon->showbar != selmon->pertag->showbars[selmon->pertag->curtag])
 		togglebar(NULL);
 
-	focus(NULL);
 	arrange(selmon);
+	focus(NULL);
+	warp(NULL);
 
 	for (Client *c = selmon->clients; c; c = c->next) {
 		if ((c->tags & arg->ui) && ISVISIBLE(c)) { // arg->ui is the selected tagset
@@ -3115,6 +3132,22 @@ view(const Arg *arg)
 		}
 	}	
 	
+}
+
+void
+warp(Client *c)
+{
+	/* Try to warp to the active window. */
+	if (!c)
+		c = selmon->sel;
+
+	/* If there's no active window, just warp to the middle of the screen. */
+	if (!c) {
+		XWarpPointer(dpy, None, root, 0, 0, 0, 0, selmon->wx + selmon->ww/2, selmon->wy + selmon->wh/2);
+		return;
+	}
+
+	XWarpPointer(dpy, None, c->win, 0, 0, 0, 0, c->w / 2, c->h / 2);
 }
 
 pid_t
