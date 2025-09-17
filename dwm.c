@@ -170,7 +170,7 @@ typedef struct {
 	int monitor;
 } Rule;
 
-typedef struct Systray   Systray;
+typedef struct Systray Systray;
 struct Systray {
 	Window win;
 	Client *icons;
@@ -253,6 +253,7 @@ static void setcfact(const Arg *arg);
 static void setmfact(const Arg *arg);
 static void setup(void);
 static void seturgent(Client *c, int urg);
+static void sigchld(int unused);
 static void showhide(Client *c);
 static void sigstatusbar(const Arg *arg);
 static void spawn(const Arg *arg);
@@ -367,8 +368,10 @@ static size_t autostart_len;
 
 /* execute command from autostart array */
 static void
-autostart_exec() {
+autostart_exec() 
+{
 	const char *const *p;
+	struct sigaction sa;
 	size_t i = 0;
 
 	/* count entries */
@@ -379,6 +382,14 @@ autostart_exec() {
 	for (p = autostart; *p; i++, p++) {
 		if ((autostart_pids[i] = fork()) == 0) {
 			setsid();
+
+			/* Restore SIGCHLD sighandler to default before spawning a program */
+			sigemptyset(&sa.sa_mask);
+			sa.sa_flags = 0;
+			sa.sa_handler = SIG_DFL;
+			sigaction(SIGCHLD, &sa, NULL);
+
+
 			execvp(*p, (char *const *)p);
 			fprintf(stderr, "dwm: execvp %s\n", *p);
 			perror(" failed");
@@ -731,7 +742,7 @@ clientmessage(XEvent *e)
 	XClientMessageEvent *cme = &e->xclient;
 	Client *c = wintoclient(cme->window);
 
-	if (showsystray && cme->window == systray->win && cme->message_type == netatom[NetSystemTrayOP]) {
+	if (showsystray && systray && cme->window == systray->win && cme->message_type == netatom[NetSystemTrayOP]) {
 		/* add systray icons */
 		if (cme->data.l[1] == SYSTEM_TRAY_REQUEST_DOCK) {
 			if (!(c = (Client *)calloc(1, sizeof(Client))))
@@ -740,15 +751,11 @@ clientmessage(XEvent *e)
 				free(c);
 				return;
 			}
+
 			c->mon = selmon;
 			c->next = systray->icons;
 			systray->icons = c;
-			if (!XGetWindowAttributes(dpy, c->win, &wa)) {
-				/* use sane defaults */
-				wa.width = bh;
-				wa.height = bh;
-				wa.border_width = 0;
-			}
+			XGetWindowAttributes(dpy, c->win, &wa);
 			c->x = c->oldx = c->y = c->oldy = 0;
 			c->w = c->oldw = wa.width;
 			c->h = c->oldh = wa.height;
@@ -761,18 +768,14 @@ clientmessage(XEvent *e)
 			updatesystrayicongeom(c, wa.width, wa.height);
 			XAddToSaveSet(dpy, c->win);
 			XSelectInput(dpy, c->win, StructureNotifyMask | PropertyChangeMask | ResizeRedirectMask);
+			XClassHint ch = {"dwmsystray", "dwmsystray"};
+			XSetClassHint(dpy, c->win, &ch);
 			XReparentWindow(dpy, c->win, systray->win, 0, 0);
 			/* use parents background color */
-			swa.background_pixel  = scheme[SchemeNorm][ColBg].pixel;
+			swa.background_pixel = scheme[SchemeNorm][ColBg].pixel;
 			XChangeWindowAttributes(dpy, c->win, CWBackPixel, &swa);
 			sendevent(c->win, netatom[Xembed], StructureNotifyMask, CurrentTime, XEMBED_EMBEDDED_NOTIFY, 0 , systray->win, XEMBED_EMBEDDED_VERSION);
-			/* FIXME not sure if I have to send these events, too */
-			sendevent(c->win, netatom[Xembed], StructureNotifyMask, CurrentTime, XEMBED_FOCUS_IN, 0 , systray->win, XEMBED_EMBEDDED_VERSION);
-			sendevent(c->win, netatom[Xembed], StructureNotifyMask, CurrentTime, XEMBED_WINDOW_ACTIVATE, 0 , systray->win, XEMBED_EMBEDDED_VERSION);
-			sendevent(c->win, netatom[Xembed], StructureNotifyMask, CurrentTime, XEMBED_MODALITY_ON, 0 , systray->win, XEMBED_EMBEDDED_VERSION);
 			XSync(dpy, False);
-			resizebarwin(selmon);
-			updatesystray();
 			setclientstate(c, NormalState);
 		}
 		return;
@@ -942,7 +945,7 @@ destroynotify(XEvent *e)
 		unmanage(c, 1);
 	else if ((c = swallowingclient(ev->window)))
 		unmanage(c->swallowing, 1);
-	else if ((c = wintosystrayicon(ev->window))) {
+	else if (showsystray && (c = wintosystrayicon(ev->window))) {
 		removesystrayicon(c);
 		resizebarwin(selmon);
 		updatesystray();
@@ -1465,7 +1468,7 @@ maprequest(XEvent *e)
 	XMapRequestEvent *ev = &e->xmaprequest;
 
 	Client *i;
-	if ((i = wintosystrayicon(ev->window))) {
+	if (showsystray && systray && (i = wintosystrayicon(ev->window))) {
 		sendevent(i->win, netatom[Xembed], StructureNotifyMask, CurrentTime, XEMBED_WINDOW_ACTIVATE, 0, systray->win, XEMBED_EMBEDDED_VERSION);
 		resizebarwin(selmon);
 		updatesystray();
@@ -1807,7 +1810,7 @@ propertynotify(XEvent *e)
 	Window trans;
 	XPropertyEvent *ev = &e->xproperty;
 
-	if ((c = wintosystrayicon(ev->window))) {
+	if (showsystray && (c = wintosystrayicon(ev->window))) {
 		if (ev->atom == XA_WM_NORMAL_HINTS) {
 			updatesizehints(c);
 			updatesystrayicongeom(c, c->w, c->h);
@@ -1893,6 +1896,7 @@ removesystrayicon(Client *i)
 	for (ii = &systray->icons; *ii && *ii != i; ii = &(*ii)->next);
 	if (ii)
 		*ii = i->next;
+	XReparentWindow(dpy, i->win, root, 0, 0);
 	free(i);
 }
 
@@ -2380,16 +2384,12 @@ setup(void)
 	int i;
 	XSetWindowAttributes wa;
 	Atom utf8string;
-	struct sigaction sa;
 
-	/* do not transform children into zombies when they terminate */
-	sigemptyset(&sa.sa_mask);
-	sa.sa_flags = SA_NOCLDSTOP | SA_NOCLDWAIT | SA_RESTART;
-	sa.sa_handler = SIG_IGN;
-	sigaction(SIGCHLD, &sa, NULL);
+	/* clean up any zombies immediately */
+	sigchld(0);
 
-	/* clean up any zombies (inherited from .xinitrc etc) immediately */
-	while (waitpid(-1, NULL, WNOHANG) > 0);
+	/* JDK environment variable */
+	putenv("_JAVA_AWT_WM_NONREPARENTING=1");
 
 	/* init screen */
 	screen = DefaultScreen(dpy);
@@ -2496,6 +2496,30 @@ showhide(Client *c)
 }
 
 void
+sigchld(int unused)
+{
+	pid_t pid;
+
+	if (signal(SIGCHLD, sigchld) == SIG_ERR)
+		die("can't install SIGCHLD handler:");
+
+	while (0 < (pid = waitpid(-1, NULL, WNOHANG))) {
+		pid_t *p, *lim;
+
+		if (!(p = autostart_pids))
+			continue;
+		lim = &p[autostart_len];
+
+		for (; p < lim; p++) {
+			if (*p == pid) {
+				*p = -1;
+				break;
+			}
+		}
+	}
+}
+
+void
 sigstatusbar(const Arg *arg)
 {
 	union sigval sv;
@@ -2545,38 +2569,66 @@ tagmon(const Arg *arg)
 }
 
 void
-tile(Monitor *m)
+getfacts(Monitor *m, int msize, int ssize, float *mf, float *sf, int *mr, int *sr)
 {
-	unsigned int i, n, h, mw, my, ty;
+	unsigned int n;
 	float mfacts = 0, sfacts = 0;
+	int mtotal = 0, stotal = 0;
 	Client *c;
 
-	for (n = 0, c = nexttiled(m->clients); c; c = nexttiled(c->next), n++) {
+	for (n = 0, c = nexttiled(m->clients); c; c = nexttiled(c->next), n++)
 		if (n < m->nmaster)
 			mfacts += c->cfact;
 		else
 			sfacts += c->cfact;
-	}
+
+	for (n = 0, c = nexttiled(m->clients); c; c = nexttiled(c->next), n++)
+		if (n < m->nmaster)
+			mtotal += msize * (c->cfact / mfacts);
+		else
+			stotal += ssize * (c->cfact / sfacts);
+
+	*mf = mfacts; // total factor of master area
+	*sf = sfacts; // total factor of stack area
+	*mr = msize - mtotal; // the remainder (rest) of pixels after a cfacts master split
+	*sr = ssize - stotal; // the remainder (rest) of pixels after a cfacts stack split
+}
+
+static void
+tile(Monitor *m)
+{
+	unsigned int i, n;
+	int mx = 0, my = 0, mh = 0, mw = 0;
+	int sx = 0, sy = 0, sh = 0, sw = 0;
+	float mfacts, sfacts;
+	int mrest, srest;
+	Client *c;
+
+	for (n = 0, c = nexttiled(m->clients); c; c = nexttiled(c->next), n++);
+
 	if (n == 0)
 		return;
 
-	if (n > m->nmaster)
-		mw = m->nmaster ? m->ww * m->mfact : 0;
-	else
-		mw = m->ww;
-	for (i = my = ty = 0, c = nexttiled(m->clients); c; c = nexttiled(c->next), i++)
+	sx = mx = m->wx;
+	sy = my = m->wy;
+	sh = mh = m->wh;
+	sw = mw = m->ww;
+
+	if (m->nmaster && n > m->nmaster) {
+		sw = mw * (1 - m->mfact);
+		mw = mw * m->mfact;
+		sx = mx + mw;
+	}
+
+	getfacts(m, mh, sh, &mfacts, &sfacts, &mrest, &srest);
+
+	for (i = 0, c = nexttiled(m->clients); c; c = nexttiled(c->next), i++)
 		if (i < m->nmaster) {
-			h = (m->wh - my) * (c->cfact / mfacts);
-			resize(c, m->wx, m->wy + my, mw - (2*c->bw), h - (2*c->bw), 0);
-			if (my + HEIGHT(c) < m->wh)
-				my += HEIGHT(c);
-				mfacts -= c->cfact;
+			resize(c, mx, my, mw - (2*c->bw), (mh / mfacts) * c->cfact + (i < mrest ? 1 : 0) - (2*c->bw), 0);
+			my += HEIGHT(c);
 		} else {
-			h = (m->wh - ty) * (c->cfact / sfacts);
-			resize(c, m->wx + mw, m->wy + ty, m->ww - mw - (2*c->bw), h - (2*c->bw), 0);
-			if (ty + HEIGHT(c) < m->wh)
-				ty += HEIGHT(c);
-				sfacts -= c->cfact;
+			resize(c, sx, sy, sw - (2*c->bw), (sh / sfacts) * c->cfact + ((i - m->nmaster) < srest ? 1 : 0) - (2*c->bw), 0);
+			sy += HEIGHT(c);
 		}
 }
 
@@ -3312,12 +3364,14 @@ wintoclient(Window w)
 }
 
 Client *
-wintosystrayicon(Window w) {
+wintosystrayicon(Window w)
+{
+	if (!systray)
+		return NULL;
 	Client *i = NULL;
-
 	if (!showsystray || !w)
 		return i;
-	for (i = systray->icons; i && i->win != w; i = i->next) ;
+	for (i = systray->icons; i && i->win != w; i = i->next);
 	return i;
 }
 
