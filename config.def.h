@@ -21,17 +21,23 @@ static const char *fonts[] = {
 	"NotoColorEmoji:pixelsize=16:antialias=true:autohint=true" 
 };
 
-static const char normbordercolor[] = "#3B4252";
-static const char normbgcolor[]     = "#434C5E";
-static const char normfgcolor[]     = "#D8DEE9";
-static const char selbordercolor[]  = "#434C5E";
-static const char selbgcolor[]      = "#434C5E";
-static const char selfgcolor[]      = "#ECEFF4";
+static const char normbordercolor[]  = "#3B4252";
+static const char normbgcolor[]      = "#434C5E";
+static const char normfgcolor[]      = "#D8DEE9";
+static const char selbordercolor[]   = "#434C5E";
+static const char selbgcolor[]       = "#434C5E";
+static const char selfgcolor[]       = "#ECEFF4";
+static const char selbgschemecolor[] = "#2E3440";
 
 static const char *colors[][3] = {
-	/*               fg           bg           border         */
-	[SchemeNorm] = { normfgcolor, normbgcolor, normbordercolor },
-	[SchemeSel]  = { selfgcolor,  selbgcolor,  selbordercolor  },
+	/*                   fg           bg                border         */
+	[SchemeNorm]     = { normfgcolor, normbgcolor,      normbordercolor },
+	[SchemeSel]      = { selfgcolor,  selbgcolor,       selbordercolor  },
+	[SchemeStatus]   = { normfgcolor, normbgcolor,      "#000000"     }, // Statusbar right
+	[SchemeTagsSel]  = { selfgcolor,  selbgschemecolor, "#000000"     }, // Tagbar left selected
+	[SchemeTagsNorm] = { normfgcolor, normbgcolor,      "#000000"     }, // Tagbar left unselected
+	[SchemeInfoSel]  = { selfgcolor,  selbgcolor,       "#000000"     }, // infobar middle selected
+	[SchemeInfoNorm] = { normfgcolor, normbgcolor,      "#000000"     }, // infobar middle unselected
 };
 
 /* autostart */
